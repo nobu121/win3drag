@@ -14,6 +14,14 @@ Windows utility: **three-finger press-and-drag** on a Precision Touchpad perform
 
 **Requirements:** Windows 10+ with a Precision Touchpad. Disable Windows built-in three-finger gestures first (see below).
 
+## Install
+
+```powershell
+winget install --id nobu121.win3drag
+```
+
+WinGet adds `3drag` to PATH; open a **new** terminal, then run `3drag start`.
+
 ## Usage
 
 Do **not** double-click the exe. Run from a terminal:

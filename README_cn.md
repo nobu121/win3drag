@@ -14,6 +14,14 @@
 
 **要求：** Windows 10+ 且为精确触摸板。须先关闭系统自带三指手势（见下文）。
 
+## 安装
+
+```powershell
+winget install --id nobu121.win3drag
+```
+
+WinGet 会把 `3drag` 加入 PATH；**重新打开终端**后执行 `3drag start`。
+
 ## 使用
 
 **不要双击 exe**。在终端中执行：
