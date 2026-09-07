@@ -2,71 +2,34 @@
 
 Package ID: **`nobu121.win3drag`**
 
-Manifests mirror [microsoft/winget-pkgs](https://github.com/microsoft/winget-pkgs) layout under `manifests/n/nobu121/win3drag/<version>/`.
+Publishing a GitHub Release whose asset is named **`3drag.exe`** runs `.github/workflows/winget.yml`, which opens a PR on [microsoft/winget-pkgs](https://github.com/microsoft/winget-pkgs). Users get the new version after that PR merges (`winget upgrade --id nobu121.win3drag`).
 
-## Before submitting
+`manifests/` in this folder is a local copy / reference. The action builds the next version from the last published manifest in winget-pkgs, so you do **not** need to add a new YAML folder for each release.
 
-### 1. Publish a GitHub Release
+## One-time setup
 
-1. Build: `build.bat` → `3drag.exe`
-2. On [releases](https://github.com/nobu121/win3drag/releases), create tag **`v1.0.0`**
-3. Upload asset named **`3drag.exe`** (name must match `InstallerUrl`)
+1. Fork https://github.com/microsoft/winget-pkgs as **`nobu121/winget-pkgs`** (already done).
+2. Create a **classic** PAT with **`public_repo`** (fine-grained tokens are not supported):  
+   https://github.com/settings/tokens/new?scopes=public_repo&description=win3drag-winget
+3. Add it as repo secret **`WINGET_TOKEN`**:  
+   https://github.com/nobu121/win3drag/settings/secrets/actions
 
-### 2. Set SHA256
+## Release
 
-From repo root (PowerShell):
-
-```powershell
-.\packaging\winget\scripts\update-sha256.ps1 -Version 1.0.0 -ExePath .\3drag.exe
+```bat
+build.bat
 ```
 
-Or download the release file and hash it:
-
 ```powershell
-.\packaging\winget\scripts\update-sha256.ps1 -Version 1.0.0 -Url "https://github.com/nobu121/win3drag/releases/download/v1.0.0/3drag.exe"
+gh release create v1.0.2 --title v1.0.2 --notes "..." .\3drag.exe
 ```
 
-Edit `nobu121.win3drag.installer.yaml` if the script is not used — replace `InstallerSha256` and `ReleaseDate`.
+Tag `v1.0.2` becomes WinGet version `1.0.2` (the `v` is stripped). Retry from **Actions → Publish to WinGet → Run workflow** if the first run failed (for example the secret was missing).
 
-### 3. Validate (optional)
+## Manual fallback
 
-```powershell
-winget validate --manifest "packaging\winget\manifests\n\nobu121\win3drag\1.0.0"
-```
-
-Local install test (admin once: `winget settings --enable LocalManifestFiles`):
+Copy `manifests/n/nobu121/win3drag/<version>/` into the winget-pkgs fork at the same path, then open a PR titled `New version: nobu121.win3drag version <version>`.
 
 ```powershell
-winget install --manifest "packaging\winget\manifests\n\nobu121\win3drag\1.0.0"
-3drag help
+winget validate --manifest "packaging\winget\manifests\n\nobu121\win3drag\1.0.1"
 ```
-
-## Submit to winget-pkgs
-
-1. Fork https://github.com/microsoft/winget-pkgs
-2. Copy folder `packaging/winget/manifests/n/nobu121/win3drag/1.0.0/` to your fork at the **same path**
-3. Open PR with title: `New package: nobu121.win3drag version 1.0.0`
-4. Fill PR checklist (installer URL reachable, SHA256 matches, etc.)
-
-Docs: [Submitting packages](https://github.com/microsoft/winget-pkgs/blob/master/doc/README.md)
-
-## After merge
-
-Users can install with:
-
-```powershell
-winget install --id nobu121.win3drag
-```
-
-The manifest uses `InstallerType: portable` with `Commands: [3drag]`. WinGet copies the exe and adds a `3drag` shim under `%LOCALAPPDATA%\Microsoft\WinGet\Links` (on PATH). Users must open a new terminal after install.
-
-Upgrade later: publish `v1.0.1` Release, add `manifests/n/nobu121/win3drag/1.0.1/` (copy 1.0.0, bump version, URL, SHA256), new PR.
-
-## New version checklist
-
-| Step | Action |
-|------|--------|
-| 1 | Git tag + GitHub Release with `3drag.exe` |
-| 2 | New folder `.../win3drag/<version>/` with four YAML files |
-| 3 | Update `InstallerUrl`, `InstallerSha256`, `PackageVersion`, `ReleaseDate` |
-| 4 | PR to winget-pkgs |

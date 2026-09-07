@@ -1,0 +1,29 @@
+# Publish a GitHub Release (asset must be 3drag.exe) to submit
+# nobu121.win3drag to microsoft/winget-pkgs.
+#
+# One-time: classic PAT with public_repo → repo secret WINGET_TOKEN
+# Fork microsoft/winget-pkgs as nobu121/winget-pkgs (already done).
+
+name: Publish to WinGet
+
+on:
+  release:
+    types: [released]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to submit (e.g. v1.0.2)
+        required: true
+        type: string
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: vedantmgoyal9/winget-releaser@main
+        with:
+          identifier: nobu121.win3drag
+          installers-regex: '^3drag\.exe$'
+          token: ${{ secrets.WINGET_TOKEN }}
+          release-tag: ${{ github.event.release.tag_name || inputs.tag }}
+          fork-user: nobu121
