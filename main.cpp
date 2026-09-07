@@ -15,7 +15,7 @@
 // 工作原理：
 //   1. 隐藏 message-only 窗口 + RegisterRawInputDevices 订阅 PTP (UsagePage 0x0D / Usage 0x05)
 //   2. 解析每帧 HID 报告，按 LinkCollection 取出每根手指的 X/Y/TipSwitch/ContactId
-//   3. 状态机：3 指落下 -> LEFTDOWN；3 指移动 -> SendInput MOVE + SetCursorPos；任一指抬起 -> LEFTUP
+//   3. 状态机：3 指落下 -> LEFTDOWN；3 指移动 -> SendInput 相对 MOVE + SetCursorPos；任一指抬起 -> LEFTUP
 
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
@@ -143,6 +143,9 @@ static const ULONGLONG START_DEBOUNCE_MS   = 20;
 // 亚像素累加器：本帧 dt*k 的分数部分留下，下一帧继续累加，攒够 1px 才下发。
 static double g_subX = 0.0;
 static double g_subY = 0.0;
+// 拖拽期间自己累加的光标位置。不用每帧 GetCursorPos：SendInput 量化/排队会污染读数。
+static LONG   g_scrX = 0;
+static LONG   g_scrY = 0;
 // 上一帧（钳位后）的 max(|dx|,|dy|)，用于尖刺检测。LEFTDOWN 时清零。
 static LONG   g_prevDtMag = 0;
 
@@ -517,31 +520,24 @@ static void SendMouseFlag(DWORD flag)
     SendInput(1, &in, sizeof(in));
 }
 
-// 屏幕像素 -> SendInput 归一化绝对坐标（0..65536，覆盖整个虚拟桌面）。
-static LONG ScreenToNormAbs(LONG pos, int smOrigin, int smSize)
-{
-    int origin = GetSystemMetrics(smOrigin);
-    int size   = GetSystemMetrics(smSize);
-    if (size <= 0) return 0;
-    return MulDiv(pos - origin, 65536, size);
-}
-
-// 把光标移到指定屏幕像素坐标。
+// 按像素步进移动光标。
 //
-// 必须走 SendInput(MOUSEEVENTF_MOVE)：任务栏图标重排、OLE 拖放（资源管理器文件、
-// Windows Terminal 选中文本等）只认输入队列里的 WM_MOUSEMOVE，SetCursorPos 不发消息。
-// 绝对坐标 + VIRTUALDESK：不受 EnhancePointerPrecision 影响，多显示器用虚拟桌面坐标。
-// SetCursorPos 再钉到目标像素，抵消 65536 量化误差，下一帧 GetCursorPos+delta 不漂移。
-static void MoveCursorTo(LONG screenX, LONG screenY)
+// SetCursorPos：同步跟手，不进队列、不受鼠标加速影响（窗口拖拽靠这个）。
+// SendInput 相对 MOVE：给任务栏 / OLE 拖发放 WM_MOUSEMOVE。
+// 不用绝对坐标 + MOVE_NOCOALESCE：65536 量化和事件排队会把光标往回拽，感觉不跟手。
+// 最后再 SetCursorPos 一次，把相对注入（及加速）造成的偏移钉回去。
+static void MoveCursorBy(LONG stepX, LONG stepY)
 {
+    g_scrX += stepX;
+    g_scrY += stepY;
+
     INPUT in = {};
     in.type       = INPUT_MOUSE;
-    in.mi.dx      = ScreenToNormAbs(screenX, SM_XVIRTUALSCREEN, SM_CXVIRTUALSCREEN);
-    in.mi.dy      = ScreenToNormAbs(screenY, SM_YVIRTUALSCREEN, SM_CYVIRTUALSCREEN);
-    in.mi.dwFlags = MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE |
-                    MOUSEEVENTF_VIRTUALDESK | MOUSEEVENTF_MOVE_NOCOALESCE;
+    in.mi.dx      = stepX;
+    in.mi.dy      = stepY;
+    in.mi.dwFlags = MOUSEEVENTF_MOVE;
     SendInput(1, &in, sizeof(in));
-    SetCursorPos((int)screenX, (int)screenY);
+    SetCursorPos((int)g_scrX, (int)g_scrY);
 }
 
 // 在当前 g_fingers 中选 cid 最小的 down=true 那根作为主导手指；找不到返回 -1。
@@ -687,9 +683,13 @@ static void HandleRawInput(HRAWINPUT hRawInput)
 
             POINT p0;
             if (GetCursorPos(&p0)) {
+                g_scrX = p0.x;
+                g_scrY = p0.y;
                 LogF("[drag] LEFTDOWN  primary cid=%d  touch=(%d,%d)  cursor=(%d,%d)",
                      cid, (int)g_lastTouchX, (int)g_lastTouchY, (int)p0.x, (int)p0.y);
             } else {
+                g_scrX = 0;
+                g_scrY = 0;
                 LogF("[drag] LEFTDOWN  primary cid=%d  touch=(%d,%d)",
                      cid, (int)g_lastTouchX, (int)g_lastTouchY);
             }
@@ -744,8 +744,7 @@ static void HandleRawInput(HRAWINPUT hRawInput)
         g_subY -= (double)stepY;
 
         if (stepX != 0 || stepY != 0) {
-            POINT pt;
-            if (GetCursorPos(&pt)) MoveCursorTo(pt.x + stepX, pt.y + stepY);
+            MoveCursorBy(stepX, stepY);
         }
 
         if (g_debug) {
