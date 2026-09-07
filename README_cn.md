@@ -32,6 +32,7 @@ WinGet 会把 `3drag` 加入 PATH；**重新打开终端**后执行 `3drag start
 3drag reload   重新加载配置
 3drag status   查询是否在运行
 3drag config   用默认编辑器打开配置
+3drag autostart enabled|disabled   开关开机自启
 3drag help     帮助
 ```
 

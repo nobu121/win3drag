@@ -32,6 +32,7 @@ Do **not** double-click the exe. Run from a terminal:
 3drag reload   Reload config
 3drag status   Check if running
 3drag config   Open config in default editor
+3drag autostart enabled|disabled   Toggle logon autostart
 3drag help     Help
 ```
 

@@ -6,6 +6,7 @@
 //   3drag stop     停止 daemon
 //   3drag reload   重新加载 3drag.ini
 //   3drag status   查询是否在运行
+//   3drag autostart enabled|disabled
 //   3drag help     帮助
 //
 // 内部：
@@ -14,7 +15,7 @@
 // 工作原理：
 //   1. 隐藏 message-only 窗口 + RegisterRawInputDevices 订阅 PTP (UsagePage 0x0D / Usage 0x05)
 //   2. 解析每帧 HID 报告，按 LinkCollection 取出每根手指的 X/Y/TipSwitch/ContactId
-//   3. 状态机：3 指落下 -> LEFTDOWN；3 指移动 -> SetCursorPos；任一指抬起 -> LEFTUP
+//   3. 状态机：3 指落下 -> LEFTDOWN；3 指移动 -> SendInput MOVE + SetCursorPos；任一指抬起 -> LEFTUP
 
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
@@ -323,6 +324,13 @@ static void LoadConfigFromIni(const wchar_t* path, AppConfig& cfg)
     if (cfg.dt_clamp > 100000)   cfg.dt_clamp = 100000;
 }
 
+static void WriteIntToIni(const wchar_t* section, const wchar_t* key, int val, const wchar_t* path)
+{
+    wchar_t buf[16];
+    wsprintfW(buf, L"%d", val);
+    WritePrivateProfileStringW(section, key, buf, path);
+}
+
 static bool ReadAutostartEnabled()
 {
     HKEY hKey;
@@ -356,6 +364,15 @@ static void SetAutostart(bool enable)
         RegDeleteValueW(hKey, AUTOSTART_VAL_W);
     }
     RegCloseKey(hKey);
+}
+
+// 从 ini 同步 HKCU Run（reload / autostart 命令在 CLI 进程调用，不依赖 daemon）
+static void ApplyAutostartFromIni()
+{
+    if (!InitUserPaths()) return;
+    AppConfig cfg = { 120, 50, 0, 1 };
+    LoadConfigFromIni(g_iniPath, cfg);
+    SetAutostart(cfg.autostart != 0);
 }
 
 static void ApplyConfig(const AppConfig& cfg)
@@ -500,15 +517,30 @@ static void SendMouseFlag(DWORD flag)
     SendInput(1, &in, sizeof(in));
 }
 
+// 屏幕像素 -> SendInput 归一化绝对坐标（0..65536，覆盖整个虚拟桌面）。
+static LONG ScreenToNormAbs(LONG pos, int smOrigin, int smSize)
+{
+    int origin = GetSystemMetrics(smOrigin);
+    int size   = GetSystemMetrics(smSize);
+    if (size <= 0) return 0;
+    return MulDiv(pos - origin, 65536, size);
+}
+
 // 把光标移到指定屏幕像素坐标。
 //
-// 用 SetCursorPos 而不是 SendInput(MOUSEEVENTF_ABSOLUTE)：
-//   - SetCursorPos 同步立即生效，不进系统输入队列；
-//   - 拖拽窗口/选择文本时 modal loop 拿到的是"最新位置"；
-//   - 不受 EnhancePointerPrecision（鼠标加速）影响；
-//   - 多显示器情况下接受虚拟桌面像素坐标，OS 自动 clamp 到任一显示器内。
+// 必须走 SendInput(MOUSEEVENTF_MOVE)：任务栏图标重排、OLE 拖放（资源管理器文件、
+// Windows Terminal 选中文本等）只认输入队列里的 WM_MOUSEMOVE，SetCursorPos 不发消息。
+// 绝对坐标 + VIRTUALDESK：不受 EnhancePointerPrecision 影响，多显示器用虚拟桌面坐标。
+// SetCursorPos 再钉到目标像素，抵消 65536 量化误差，下一帧 GetCursorPos+delta 不漂移。
 static void MoveCursorTo(LONG screenX, LONG screenY)
 {
+    INPUT in = {};
+    in.type       = INPUT_MOUSE;
+    in.mi.dx      = ScreenToNormAbs(screenX, SM_XVIRTUALSCREEN, SM_CXVIRTUALSCREEN);
+    in.mi.dy      = ScreenToNormAbs(screenY, SM_YVIRTUALSCREEN, SM_CYVIRTUALSCREEN);
+    in.mi.dwFlags = MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE |
+                    MOUSEEVENTF_VIRTUALDESK | MOUSEEVENTF_MOVE_NOCOALESCE;
+    SendInput(1, &in, sizeof(in));
     SetCursorPos((int)screenX, (int)screenY);
 }
 
@@ -969,6 +1001,8 @@ static int cmd_stop()
 
 static int cmd_reload()
 {
+    ApplyAutostartFromIni();
+
     HWND h = FindDaemonWindow();
     if (!h) {
         PrintLine("3drag is not running");
@@ -977,6 +1011,24 @@ static int cmd_reload()
     DWORD pid = WindowPid(h);
     PostMessageW(h, WM_APP_RELOAD, 0, 0);
     PrintLine("3drag config reloaded (pid %u)", (unsigned)pid);
+    return 0;
+}
+
+static int cmd_autostart(bool enable)
+{
+    if (!InitUserPaths()) {
+        PrintLine("failed to resolve %%APPDATA%%");
+        return 1;
+    }
+    WriteDefaultIniIfMissing(g_iniPath);
+    WriteIntToIni(L"general", L"autostart", enable ? 1 : 0, g_iniPath);
+    SetAutostart(enable);
+
+    HWND h = FindDaemonWindow();
+    if (h) {
+        PostMessageW(h, WM_APP_RELOAD, 0, 0);
+    }
+    PrintLine("autostart: %s", enable ? "enabled" : "disabled");
     return 0;
 }
 
@@ -1026,6 +1078,7 @@ static int cmd_help()
         "  reload   Reload config from 3drag.ini\r\n"
         "  status   Show whether 3drag is running\r\n"
         "  config   Open 3drag.ini in the default editor (creates one if missing)\r\n"
+        "  autostart enabled|disabled   Toggle logon autostart (updates ini + registry)\r\n"
         "  help     Print this message\r\n"
         "\r\n"
         "Files:\r\n"
@@ -1075,6 +1128,17 @@ int wmain(int argc, wchar_t** argv)
     if (lstrcmpiW(sub, L"reload")   == 0) return cmd_reload();
     if (lstrcmpiW(sub, L"status")   == 0) return cmd_status();
     if (lstrcmpiW(sub, L"config")   == 0) return cmd_config();
+    if (lstrcmpiW(sub, L"autostart") == 0) {
+        if (argc < 3) {
+            PrintLine("usage: 3drag autostart enabled|disabled");
+            return 2;
+        }
+        if (lstrcmpiW(argv[2], L"enabled") == 0)  return cmd_autostart(true);
+        if (lstrcmpiW(argv[2], L"disabled") == 0) return cmd_autostart(false);
+        PrintLine("unknown autostart option: %ws", argv[2]);
+        PrintLine("usage: 3drag autostart enabled|disabled");
+        return 2;
+    }
     if (lstrcmpiW(sub, L"help")     == 0 ||
         lstrcmpiW(sub, L"--help")   == 0 ||
         lstrcmpiW(sub, L"-h")       == 0) {
